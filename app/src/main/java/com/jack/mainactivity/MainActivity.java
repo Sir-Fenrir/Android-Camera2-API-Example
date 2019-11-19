@@ -1,6 +1,7 @@
 package com.jack.mainactivity;
 
 import android.Manifest;
+import android.app.Activity;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.ImageFormat;
@@ -17,34 +18,42 @@ import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.Image;
 import android.media.ImageReader;
 import android.os.Bundle;
-import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
-import android.support.annotation.NonNull;
-import android.support.v4.app.ActivityCompat;
-import android.support.v7.app.AppCompatActivity;
 import android.util.Log;
 import android.util.Size;
+import android.util.SparseArray;
 import android.util.SparseIntArray;
 import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
 import android.widget.Button;
+import android.widget.TextView;
 import android.widget.Toast;
+
+import androidx.core.app.ActivityCompat;
+
+import com.google.android.gms.vision.Detector;
+import com.google.android.gms.vision.Frame;
+import com.google.android.gms.vision.text.TextBlock;
+import com.google.android.gms.vision.text.TextRecognizer;
+
 import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
-public class MainActivity extends AppCompatActivity {
+import static android.graphics.ImageFormat.NV21;
+
+public class MainActivity extends Activity {
     private static final String TAG = "AndroidCameraApi";
     private Button takePictureButton;
     private TextureView textureView;
+    private TextView mTextView;
     private static final SparseIntArray ORIENTATIONS = new SparseIntArray();
 
     static {
@@ -66,16 +75,21 @@ public class MainActivity extends AppCompatActivity {
     private boolean mFlashSupported;
     private Handler mBackgroundHandler;
     private HandlerThread mBackgroundThread;
+    private TextRecognizer textRecognizer;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-        textureView = (TextureView) findViewById(R.id.texture);
+        textureView = findViewById(R.id.texture);
+        mTextView = findViewById(R.id.text_view);
         assert textureView != null;
         textureView.setSurfaceTextureListener(textureListener);
-        takePictureButton = (Button) findViewById(R.id.btn_takepicture);
+        takePictureButton = findViewById(R.id.btn_takepicture);
         assert takePictureButton != null;
+
+        this.createTextRecognizer();
+
         takePictureButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -151,6 +165,44 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void createTextRecognizer() {
+        this.textRecognizer = new TextRecognizer.Builder(getApplicationContext()).build();
+
+        textRecognizer.setProcessor(new Detector.Processor<TextBlock>() {
+            @Override
+            public void release() {
+            }
+
+            /**
+             * Detect all the text from camera using TextBlock and the values into a stringBuilder
+             * which will then be set to the textView.
+             * */
+            @Override
+            public void receiveDetections(Detector.Detections<TextBlock> detections) {
+                final SparseArray<TextBlock> items = detections.getDetectedItems();
+                if (items.size() != 0 ){
+
+                    mTextView.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            StringBuilder stringBuilder = new StringBuilder();
+                            for(int i=0;i<items.size();i++){
+                                TextBlock item = items.valueAt(i);
+                                stringBuilder.append(item.getValue());
+                                stringBuilder.append("\n");
+                            }
+                            Toast toast = new Toast(getApplicationContext());
+                            String text = stringBuilder.toString();
+                            toast.setText(text);
+                            Log.e(TAG, "Recognized text: " + text);
+                            mTextView.setText(text);
+                        }
+                    });
+                }
+            }
+        });
+    }
+
     protected void takePicture() {
         if (null == cameraDevice) {
             Log.e(TAG, "cameraDevice is null");
@@ -160,17 +212,17 @@ public class MainActivity extends AppCompatActivity {
         try {
             CameraCharacteristics characteristics = manager.getCameraCharacteristics(cameraDevice.getId());
             Size[] jpegSizes = null;
-            if (characteristics != null) {
-                jpegSizes = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP).getOutputSizes(ImageFormat.JPEG);
-            }
-            int width = 640;
-            int height = 480;
-            if (jpegSizes != null && 0 < jpegSizes.length) {
-                width = jpegSizes[0].getWidth();
-                height = jpegSizes[0].getHeight();
-            }
+            jpegSizes = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP).getOutputSizes(ImageFormat.JPEG);
+            int width = 1920;
+            int height = 1200;
+//            if (jpegSizes != null && 0 < jpegSizes.length) {
+//                width = jpegSizes[0].getWidth();
+//                height = jpegSizes[0].getHeight();
+//            }
+            Log.e(TAG, String.valueOf(width));
+            Log.e(TAG, String.valueOf(height));
             ImageReader reader = ImageReader.newInstance(width, height, ImageFormat.JPEG, 1);
-            List<Surface> outputSurfaces = new ArrayList<Surface>(2);
+            List<Surface> outputSurfaces = new ArrayList<>(2);
             outputSurfaces.add(reader.getSurface());
             outputSurfaces.add(new Surface(textureView.getSurfaceTexture()));
             final CaptureRequest.Builder captureBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
@@ -179,37 +231,26 @@ public class MainActivity extends AppCompatActivity {
             // Orientation
             int rotation = getWindowManager().getDefaultDisplay().getRotation();
             captureBuilder.set(CaptureRequest.JPEG_ORIENTATION, ORIENTATIONS.get(rotation));
-            final File file = new File(Environment.getExternalStorageDirectory() + "/pic.jpg");
+//            final File file = new File(Environment.getExternalStorageDirectory() + "/pic.jpg");
+            final int finalWidth = width;
+            final int finalHeight = height;
             ImageReader.OnImageAvailableListener readerListener = new ImageReader.OnImageAvailableListener() {
                 @Override
                 public void onImageAvailable(ImageReader reader) {
-                    Image image = null;
-                    try {
-                        image = reader.acquireLatestImage();
+                    try (Image image = reader.acquireLatestImage()) {
                         ByteBuffer buffer = image.getPlanes()[0].getBuffer();
                         byte[] bytes = new byte[buffer.capacity()];
                         buffer.get(bytes);
                         save(bytes);
-                    } catch (FileNotFoundException e) {
-                        e.printStackTrace();
+                        textRecognizer.detect(new Frame.Builder().setImageData(buffer, finalWidth, finalHeight, NV21).build());
                     } catch (IOException e) {
                         e.printStackTrace();
-                    } finally {
-                        if (image != null) {
-                            image.close();
-                        }
                     }
                 }
 
                 private void save(byte[] bytes) throws IOException {
-                    OutputStream output = null;
-                    try {
-                        output = new FileOutputStream(file);
-                        output.write(bytes);
-                    } finally {
-                        if (null != output) {
-                            output.close();
-                        }
+                    try (OutputStream output = new FileOutputStream(file)) {
+//                        output.write(bytes);
                     }
                 }
             };
@@ -249,9 +290,9 @@ public class MainActivity extends AppCompatActivity {
             Surface surface = new Surface(texture);
             captureRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
             captureRequestBuilder.addTarget(surface);
-            cameraDevice.createCaptureSession(Arrays.asList(surface), new CameraCaptureSession.StateCallback() {
+            cameraDevice.createCaptureSession(Collections.singletonList(surface), new CameraCaptureSession.StateCallback() {
                 @Override
-                public void onConfigured(@NonNull CameraCaptureSession cameraCaptureSession) {
+                public void onConfigured(CameraCaptureSession cameraCaptureSession) {
                     //The camera is already closed
                     if (null == cameraDevice) {
                         return;
@@ -262,7 +303,7 @@ public class MainActivity extends AppCompatActivity {
                 }
 
                 @Override
-                public void onConfigureFailed(@NonNull CameraCaptureSession cameraCaptureSession) {
+                public void onConfigureFailed(CameraCaptureSession cameraCaptureSession) {
                     Toast.makeText(MainActivity.this, "Configuration change", Toast.LENGTH_SHORT).show();
                 }
             }, null);
@@ -316,7 +357,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         if (requestCode == REQUEST_CAMERA_PERMISSION) {
             if (grantResults[0] == PackageManager.PERMISSION_DENIED) {
                 // close the app
